@@ -29,7 +29,7 @@ interface ComponentInfo {
   description: string;
   url: string;
   importStatement?: string;
-  props?: Record<string, ComponentProp[]>; // Component name -> Props list
+  props?: ApiReferenceItem[]; // Holds props/slots/attributes for component(s) described in Reference section
   examples?: ComponentExample[];
 }
 
@@ -38,10 +38,37 @@ interface ComponentInfo {
  */
 interface ComponentProp {
   name: string; // Renamed from 'prop' for clarity if needed elsewhere
-  type: string;
+  type?: string; // Type might not always be present
   default?: string;
   description?: string; // Flux UI seems to sometimes have descriptions in API tables
-  required?: boolean; // May need to infer this or look for specific markers
+  // required?: boolean; // May need to infer this or look for specific markers - remove for now
+}
+
+/**
+ * Interface for component slot information
+ */
+interface ComponentSlot {
+    name: string;
+    description?: string;
+}
+
+/**
+ * Interface for component attribute information
+ */
+interface ComponentAttribute {
+    name: string;
+    description?: string;
+}
+
+/**
+ * Represents the documented API (props, slots, attributes) for a component
+ * or sub-component found in the 'Reference' section.
+ */
+interface ApiReferenceItem {
+    componentName: string; // e.g., "flux:button", "flux:radio.group"
+    props?: ComponentProp[];
+    slots?: ComponentSlot[];
+    attributes?: ComponentAttribute[];
 }
 
 /**
@@ -348,7 +375,7 @@ class FluxUiServer {
     const description = this.extractDescription($);
     const examples = this.extractExamples($); // Extract examples first to find import statement
     const importStatement = this.findImportStatement(examples);
-    const props = this.extractProps($);
+    const props = this.extractApiReference($);
 
     console.error(`Extracted for ${componentName}: Title=${title}, Desc=${description.substring(0,50)}..., Import=${importStatement}, Props=${Object.keys(props).length}, Examples=${examples.length}`);
 
@@ -357,7 +384,7 @@ class FluxUiServer {
       description,
       url: componentUrl,
       importStatement,
-      props: Object.keys(props).length > 0 ? props : undefined,
+      props,
       examples, // Include examples in details as well
     };
   }
@@ -450,92 +477,144 @@ class FluxUiServer {
   /**
    * Extracts component props from the API Reference section
    */
-  private extractProps($: cheerio.CheerioAPI): Record<string, ComponentProp[]> {
-     const allProps: Record<string, ComponentProp[]> = {};
-     console.error("Looking for API Reference section...");
+  private extractApiReference($: cheerio.CheerioAPI): ApiReferenceItem[] {
+     const apiReferenceItems: ApiReferenceItem[] = [];
+     console.error("Looking for Reference section...");
 
-     // Find the "API Reference" heading
-     const apiSection = $("h2").filter((_, el) => $(el).text().trim() === "API Reference");
+     // Find the "Reference" heading (case-insensitive)
+     const referenceSectionHeading = $("h2").filter((_, el) => $(el).text().trim().toLowerCase() === "reference");
 
-     if (!apiSection.length) {
-         console.error("API Reference section (h2) not found.");
-         return allProps;
+     if (!referenceSectionHeading.length) {
+         console.error("Reference section (h2) not found.");
+         return apiReferenceItems;
      }
-     console.error("API Reference section found.");
+     console.error("Reference section found.");
 
-
-     // Find all component headings (h3) and tables following the API Reference h2
-     // This assumes structure: h2 -> h3 (Component Name) -> table (Props)
-     apiSection.nextAll('h3').each((_, h3) => {
-         const componentNameElement = $(h3);
-         const componentName = componentNameElement.text().trim();
-          console.error(`Processing component: ${componentName}`);
-
-         // Find the next table sibling for this h3
-         const tableElement = componentNameElement.next('table').first(); // Or use nextUntil('h3').filter('table')
-
-         if (!tableElement.length) {
-             console.error(`Props table not found immediately after h3: ${componentName}`);
-              // Try looking within a div sibling if structure is different
-              const nextDiv = componentNameElement.next('div');
-              const tableInDiv = nextDiv.find('table').first();
-              if(!tableInDiv.length){
-                console.error(`Props table not found within next div for h3: ${componentName}`);
-                return; // continue to next h3
-              }
-              // Found table within div, proceed with tableInDiv
-              console.error(`Props table found within div for: ${componentName}`);
-               this.processPropsTable($, tableInDiv, componentName, allProps);
-
+     // Get all subsequent div.leading-relaxed containers until the next h2
+     let referenceContainers = referenceSectionHeading.nextUntil('h2', 'div.leading-relaxed');
+     if (!referenceContainers.length) {
+         console.error("No div.leading-relaxed siblings found after Reference heading. Trying fallback...");
+         // Fallback: Check if the structure is h2 > div > div.leading-relaxed (common in some layouts)
+         // We look within the parent of the h2 for any div.leading-relaxed
+         const parentDiv = referenceSectionHeading.parent(); // Get the immediate parent
+         const fallbackContainers = parentDiv.find('div.leading-relaxed');
+         if (!fallbackContainers.length) {
+           console.error("Fallback failed: No div.leading-relaxed found within parent either.");
+           return apiReferenceItems;
          } else {
-             console.error(`Props table found for: ${componentName}`);
-             this.processPropsTable($, tableElement, componentName, allProps);
+           console.error(`Fallback successful: Found ${fallbackContainers.length} div.leading-relaxed containers within parent.`);
+           referenceContainers = fallbackContainers; // Reassign to use the fallback result
          }
+     }
 
+     console.error(`Found ${referenceContainers.length} reference containers to process.`);
+
+     // Process each container
+     referenceContainers.each((_idx, container) => {
+         const containerElement = $(container);
+         // Find all component headings (h3) within this specific container
+         containerElement.find('h3').each((_, h3) => {
+             const componentNameElement = $(h3);
+             // Extract component name, potentially cleaning up link text if needed
+             const componentName = componentNameElement.find('a').text().trim() || componentNameElement.text().trim();
+             if (!componentName) return; // Skip if no name found
+
+             console.error(`Processing component reference: ${componentName}`);
+             const currentApiItem: ApiReferenceItem = { componentName, props: [], slots: [], attributes: [] };
+
+             // Find all relevant content elements (like divs containing tables) between this h3 and the next h3 or end of this container
+             let nextElement = componentNameElement.next();
+             while (nextElement.length && !nextElement.is('h3')) {
+                 // Look for tables directly within the sibling or nested within divs
+                 const tables = nextElement.is('table') ? nextElement : nextElement.find('table');
+
+                 tables.each((_, table) => {
+                     this.processApiReferenceTable($, $(table), currentApiItem);
+                 });
+
+                 nextElement = nextElement.next();
+             }
+
+             // Add the item if it has any props, slots, or attributes
+             if (currentApiItem.props?.length || currentApiItem.slots?.length || currentApiItem.attributes?.length) {
+               apiReferenceItems.push(currentApiItem);
+             } else {
+                console.error(`No props, slots, or attributes found for ${componentName}`);
+             }
+         });
      });
 
-
-     return allProps;
+     return apiReferenceItems;
    }
 
-   private processPropsTable($: cheerio.CheerioAPI, tableElement: cheerio.Cheerio<Element>, componentName: string, allProps: Record<string, ComponentProp[]>): void {
-     const componentProps: ComponentProp[] = [];
+   // Renamed from processPropsTable to handle all table types
+   private processApiReferenceTable($: cheerio.CheerioAPI, tableElement: cheerio.Cheerio<Element>, currentApiItem: ApiReferenceItem): void {
      const headers: string[] = [];
-     tableElement.find('thead th').each((_, th) => {
+       const headerElements = tableElement.find('thead th');
+       headerElements.each((_, th) => {
        headers.push($(th).text().trim().toLowerCase());
      });
 
-     const propIndex = headers.indexOf('prop');
-     const typeIndex = headers.indexOf('type');
-     const defaultIndex = headers.indexOf('default');
-      // Add descriptionIndex if a description column exists
-      // const descriptionIndex = headers.indexOf('description');
+       if (headers.length < 2) {
+           console.error(`Table for ${currentApiItem.componentName} has insufficient headers.`);
+           return; // Need at least Name and Description columns
+       }
 
-     if (propIndex === -1 || typeIndex === -1) {
-       console.error(`Could not find 'prop' or 'type' columns in table for ${componentName}`);
-       return; // Skip this table
-     }
+       // Determine table type based on the first header
+       const tableType = headers[0]; // e.g., 'prop', 'slot', 'attribute'
+       const nameIndex = 0;
+       const descriptionIndex = 1; // Assuming description is always the second column
+
+       // Find optional columns (Type, Default for props) - adjust if needed
+       const typeIndex = headers.indexOf('type'); // May be -1
+       const defaultIndex = headers.indexOf('default'); // May be -1
+
+       console.error(`Processing table type "${tableType}" for ${currentApiItem.componentName}`);
 
      tableElement.find('tbody tr').each((_, tr) => {
        const cells = $(tr).find('td');
-       const propName = cells.eq(propIndex).text().trim();
-       const propType = cells.eq(typeIndex).text().trim();
-       const propDefault = defaultIndex !== -1 ? cells.eq(defaultIndex).text().trim() : undefined;
-       // const propDescription = descriptionIndex !== -1 ? cells.eq(descriptionIndex).text().trim() : undefined;
+           if (cells.length < 2) return; // Skip rows without enough data
 
-       if (propName) {
-         componentProps.push({
-           name: propName,
-           type: propType,
-           default: propDefault || undefined, // Ensure empty string becomes undefined
-           // description: propDescription || undefined,
+           const name = cells.eq(nameIndex).text().trim();
+           // Extract description HTML content to preserve formatting like inline code/links
+           const descriptionHtml = cells.eq(descriptionIndex).find('> div > div').first().html()?.trim(); // Target the inner div holding the main description
+
+           if (!name) return; // Skip if name is empty
+
+           switch (tableType) {
+               case 'prop':
+                   const propType = typeIndex !== -1 ? cells.eq(typeIndex).text().trim() : undefined;
+       const propDefault = defaultIndex !== -1 ? cells.eq(defaultIndex).text().trim() : undefined;
+                   currentApiItem.props = currentApiItem.props || [];
+                   currentApiItem.props.push({
+                       name: name,
+                       type: propType || undefined, // Handle cases where type might be missing/empty
+                       default: propDefault || undefined,
+                       description: descriptionHtml || undefined,
+                   });
+                   break;
+               case 'slot':
+                   currentApiItem.slots = currentApiItem.slots || [];
+                   currentApiItem.slots.push({
+                       name: name,
+                       description: descriptionHtml || undefined,
+                   });
+                   break;
+               case 'attribute':
+                   currentApiItem.attributes = currentApiItem.attributes || [];
+                   currentApiItem.attributes.push({
+                       name: name,
+                       description: descriptionHtml || undefined,
          });
+                   break;
+               default:
+                   console.warn(`Unknown table type "${tableType}" encountered for ${currentApiItem.componentName}`);
        }
      });
-     if (componentProps.length > 0) {
-        allProps[componentName] = componentProps;
-        console.error(`Extracted ${componentProps.length} props for ${componentName}`);
-     }
+
+       if (tableType === 'prop') console.error(`Extracted ${currentApiItem.props?.length || 0} props for ${currentApiItem.componentName}`);
+       if (tableType === 'slot') console.error(`Extracted ${currentApiItem.slots?.length || 0} slots for ${currentApiItem.componentName}`);
+       if (tableType === 'attribute') console.error(`Extracted ${currentApiItem.attributes?.length || 0} attributes for ${currentApiItem.componentName}`);
    }
 
 
@@ -710,4 +789,4 @@ const server = new FluxUiServer();
 server.run().catch((error) => {
   console.error("Server failed to run:", error);
   process.exit(1);
-}); 
+});
