@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/iannuttall-flux-ui-mcp-badge.png)](https://mseep.ai/app/iannuttall-flux-ui-mcp)
+
 # Flux UI MCP Server
 
 MCP server for Flux UI component references
