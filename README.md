@@ -4,6 +4,10 @@ MCP server for Flux UI component references
 
 This is a TypeScript-based MCP server that provides reference information for Flux UI components. It implements a Model Context Protocol (MCP) server that helps AI assistants access Flux UI component documentation and examples.
 
+<a href="https://glama.ai/mcp/servers/@iannuttall/flux-ui-mcp">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@iannuttall/flux-ui-mcp/badge" alt="Flux UI Server MCP server" />
+</a>
+
 ## Features
 
 ### Tools
@@ -113,4 +117,4 @@ Since MCP servers communicate over stdio, debugging can be challenging. We recom
 npm run inspector
 ```
 
-The Inspector will provide a URL to access debugging tools in your browser. 
+The Inspector will provide a URL to access debugging tools in your browser.
